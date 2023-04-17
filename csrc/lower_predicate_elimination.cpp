@@ -46,6 +46,7 @@ namespace {
 //   are exact so that the shared mem read/write would not
 //   run out of bound because of thread over-subscription.
 bool isExactParallelSharedMemAccess(TensorView* tv) {
+  return true;
   auto& parallel_dimension_map = GpuLower::current()->parallelDimensionMap();
   for (auto id : tv->domain()->domain()) {
     if (id->isThreadDim()) {
@@ -215,7 +216,6 @@ class PredicateChcker : public IterVisitor {
     TORCH_INTERNAL_ASSERT(
         !(ir_utils::isCpAsyncOp(expr) && predicateSharedMemAccess(expr)),
         "predicate removal: unsupported use case of cp.async");
-
     if (needs_predicate_) {
       return;
     }
@@ -344,6 +344,9 @@ class PredicateChcker : public IterVisitor {
         if (producer->getMemoryType() == MemoryType::Shared ||
             consumer->getMemoryType() == MemoryType::Shared) {
           if (needSharedMemPredicate(producer, consumer)) {
+            std::cout << "predicate removal: need to predicate shared mem "
+                         "access for expr: "
+                      << expr->toString() << std::endl;
             return true;
           }
         }
@@ -362,6 +365,7 @@ class PredicateChcker : public IterVisitor {
     // If consumer schedule contains in-exact thread parallel
     //  dimensions, need to predicate against out of bound
     //  shared memory access by out of bound threads.
+    std::cout << "isExactParallelSharedMemAccess(consumer)= " << isExactParallelSharedMemAccess(consumer) << std::endl;
     if (!isExactParallelSharedMemAccess(consumer)) {
       return true;
     }

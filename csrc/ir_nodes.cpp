@@ -1431,6 +1431,11 @@ MmaOpDetails getMmaOpDetails(
   const auto in_b_details = getDetailsFor(in_b);
   const auto out_details = getDetailsFor(out);
 
+
+  std::cout << "mma out= " << out->toString() << std::endl;
+  std::cout << "mma ina= " << in_a->toString() << std::endl;
+  std::cout << "mma inb= " << in_b->toString() << std::endl;
+
   using AxesData = MmaOp::AxesData;
 
   const auto getMOrNaxes = [](const AxesData& cdomains,

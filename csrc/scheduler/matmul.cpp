@@ -9,7 +9,7 @@
 #include <scheduler/mma_utils.h>
 #include <scheduler/registry.h>
 #include <scheduler/utils.h>
-
+#include <inlining.h>
 // NOTE: included to avoid compilation error caused by missing destructor in
 // 'SchedulerRuntimeInfo'
 #include <executor_utils.h>
@@ -619,6 +619,11 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     }
   }
 
+  if(params.split_k_factor > 1){
+    cc->split(2, params.split_k_factor, false);
+    std::cout << "after split, cc= " << cc->toString() << std::endl;
+  }
+
   // [Mo, No, Ko, Mi, Ni, Ki]
   // Propagate tiling globally
   scheduler_utils::transformPropagateToAllFrom(cc, -1);
@@ -626,9 +631,41 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // Schedule warp tile
   mma_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
 
+  std::cout << "after scheduleWarpTileWithReduction, cc= " << cc->toString() << std::endl;
+  TensorView* cc_rf = cc; //mma
+  TensorView* cc_rd = c; //output
+  TensorView* reload = nullptr;
+  if(params.split_k_factor > 1){
+    //cc= T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS29{2}, rS30{( ceilDiv(( ceilDiv(i2, 32) ), 2) )}, rS95{( ceilDiv(32, 16) )}, 
+    // iS87{( ceilDiv(128, 64) )}, iS89{( ceilDiv(128, 64) )}, iS91{( ceilDiv(64, 16) )}, iS93{( ceilDiv(64, 8) )}, iS92{16}, iS94{8}, rS96{16} ]
+    // cc_rf = cc->rFactor({-9, -8, -1});
+    cc_rd = cc->rFactor({-9, -8, -1});
+    cc_rf = cc_rd->cacheBefore();
+    cc_rd->setMemoryType(MemoryType::Global);
+    reload = cc_rd->cacheAfter();
+    mma_builder.accumulatorTv(cc_rf);
+    std::cout << "cc_rf= " << cc_rf->toString() << std::endl;
+    std::cout << "cc_rd= " << cc_rd->toString() << std::endl;
+    for(auto id : cc_rd->getRootDomain()){
+      std::cout << "cc_rd root= " << id->toString() << std::endl;
+    }
+    std::cout << "reload= " << reload->toString() << std::endl;
+  }
+
+
+// T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS27{( ceilDiv(i2, 256) )}, iS81{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, 
+// rS73{( ceilDiv(256, 32) )}, iS75{( ceilDiv(64, 16) )}, iS77{( ceilDiv(64, 8) )}, rS79{( ceilDiv(32, 16) )}, iS76{16}, iS78{8}, rS80{16} ]
+  if(params.slice_k_factor > 1){
+    cc_rf = cc->rFactor({-9, -4, -1});
+    mma_builder.accumulatorTv(cc_rf);
+    // T10_l[ iS85{( ceilDiv(i0, 128) )}, iS87{( ceilDiv(i3, 128) )}, rS89{( ceilDiv(i2, 256) )}rf, iS95{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, 
+    // iS96{( ceilDiv(256, 32) )}rf, iS98{( ceilDiv(64, 16) )}, iS100{( ceilDiv(64, 8) )}, rS102{( ceilDiv(32, 16) )}rf, iS99{16}, iS101{8}, rS103{16}rf ]
+    std::cout << "after rFactor, rf= " << cc_rf->toString() << std::endl;
+  }
   // Propagate warp tile to main loop and epilog/output tvs
   scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
-      cc, -1, {acw_smem, bcw_smem}, {c});
+      cc_rf, -1, {acw_smem, bcw_smem}, {cc_rd});
+    std::cout << "Propagate warp tile  reload= " << reload->toString() << std::endl;
 
   // Schedule prolog:
   //   TODO: this section needs more configurability.
@@ -642,16 +679,38 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // ------------------------------------------------------------------
   // CTA tile:
 
-  a->computeAt(c, 2);
-  b->computeAt(c, 2);
+  // a->computeAt(c, 2);
+  // b->computeAt(c, 2);
 
-  // Prolog:
-  a->computeAt(cc, 3);
-  b->computeAt(cc, 3);
+  // // Prolog:
+  // const int prolog_loop_pos = params.split_k_factor > 1 ? 4 : 3;
+  // a->computeAt(cc_rf, prolog_loop_pos);
+  // b->computeAt(cc_rf, prolog_loop_pos);
 
-  // Main Loop:
-  acr->computeAt(cc, -6);
-  bcr->computeAt(cc, -6);
+  // // Main Loop:
+  // const int main_loop_pos = params.slice_k_factor > 1 ? -7 : -6;
+  // acr->computeAt(cc_rf, main_loop_pos);
+  // bcr->computeAt(cc_rf, main_loop_pos);
+
+  // T4_g[ iS65{( ceilDiv(i0, 128) )}, iS67{( ceilDiv(i3, 128) )}, iS66{128}, iS68{128} ] produce_pos( 2 )
+  std::cout << "computeAt, a= " << a->toString() << std::endl;
+  std::cout << "computeAt, c= " << c->toString() << std::endl;
+  std::cout << "computeAt, acr= " << acr->toString() << std::endl;
+    std::cout << "computeAt  reload= " << reload->toString() << std::endl;
+  // T5_l[ iblockIdx.x23{( ceilDiv(i0, 128) )}, iblockIdx.y25{( ceilDiv(i3, 128) )}, 
+  // rS27{( ceilDiv(i2, 32) )}, rS77{( ceilDiv(32, 16) )}, 
+  // ithreadIdx.z69{( ceilDiv(128, 64) )}, ithreadIdx.y71{( ceilDiv(128, 64) )}, 
+  // iS73{( ceilDiv(64, 16) )}, iS75{( ceilDiv(64, 8) )}, iMMA153{( ceilDiv(16, 8) )}, ithreadIdx.x157{( 8 * ( ceilDiv(8, 2) ) )}, iMMA156{2}, rMMA78{16} ] 
+  // T5_l[ [0]iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS27{( ceilDiv(i2, 32) )}, rS77{( ceilDiv(32, 16) )}, 
+  //iS69{( ceilDiv(128, 64) )}, iS71{( ceilDiv(128, 64) )}, iS73{( ceilDiv(64, 16) )}, iS75{( ceilDiv(64, 8) )}, iS74{16}, iS76{8}, rS78{16} ] ca_pos( 2 ) produce_pos( 6 )
+  //----------------------------6---------------------------5--------------------------4------------------------3---------2--------1
+
+  //T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS27{( ceilDiv(i2, 32) )}, rS77{( ceilDiv(32, 16) )}, iS69{( ceilDiv(128, 64) )}, iS71{( ceilDiv(128, 64) )}, [-6] iS73{( ceilDiv(64, 16) )}, 
+  // iS75{( ceilDiv(64, 8) )}, iS74{16}, iS76{8}, rS78{16} ]
+
+  //T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS27{( ceilDiv(i2, 64) )}, iS81{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, rS73{( ceilDiv(64, 32) )}, iS75{( ceilDiv(64, 16) )}, 
+  // iS77{( ceilDiv(64, 8) )}, rS79{( ceilDiv(32, 16) )}, iS76{16}, iS78{8}, rS80{16} ]
+  std::cout << "computeAt, cc_rf= " << cc_rf->toString() << std::endl;
 
   // Add mma swizzle:
   //   TODO: this section goes to a separate matmul util,
@@ -661,9 +720,11 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     moveInnerBroadcastLeft(ab);
     moveInnerBroadcastLeft(bb);
   }
+    std::cout << "moveInnerBroadcastLeft  reload= " << reload->toString() << std::endl;
 
   ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
   bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
+    std::cout << "before propagateParallelType reload = " << reload->toString() << std::endl;
 
   // Propagate mma input swizzle up the DAG
   //  to all the tensors before mma op and after shared mem read.
@@ -679,8 +740,10 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
       {bcw_smem},
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
           .propagateParallelType());
+    std::cout << "after propagateParallelType cc_rd = " << cc_rd->toString() << std::endl;
+    std::cout << "after propagateParallelType reload = " << reload->toString() << std::endl;
 
-  cc->applyMmaSwizzle(
+  cc_rf->applyMmaSwizzle(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
 
   // Set parallelization:
@@ -696,20 +759,31 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // [Mo No Ko Kwo Mwo Nwo Mw Nw (Mi Ni Ki)]
   switch (params.cta_order) {
     case MatmulParams::TileRasterizationOrder::RowMajor:
-      cc->axis(0)->parallelize(ParallelType::BIDx);
-      cc->axis(1)->parallelize(ParallelType::BIDy);
+      cc_rf->axis(0)->parallelize(ParallelType::BIDx);
+      cc_rf->axis(1)->parallelize(ParallelType::BIDy);
       break;
     case MatmulParams::TileRasterizationOrder::ColumnMajor:
-      cc->axis(0)->parallelize(ParallelType::BIDy);
-      cc->axis(1)->parallelize(ParallelType::BIDx);
+      cc_rf->axis(0)->parallelize(ParallelType::BIDy);
+      cc_rf->axis(1)->parallelize(ParallelType::BIDx);
       break;
     default:
       TORCH_INTERNAL_ASSERT(
           false, "Invalid TileRasterizationOrder passed to Matmul scheduler");
   }
 
-  cc->axis(4)->parallelize(ParallelType::TIDz);
-  cc->axis(5)->parallelize(ParallelType::TIDy);
+  if(params.split_k_factor > 1){
+    constexpr int split_k_axis = 2;
+    cc_rf->axis(split_k_axis)->parallelize(ParallelType::BIDz);
+  }
+  // T10_l[ iS85{( ceilDiv(i0, 128) )}, iS87{( ceilDiv(i3, 128) )}, rS89{( ceilDiv(i2, 256) )}rf, 
+  // iS95{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, iS96{( ceilDiv(256, 32) )}rf, 
+  // iS98{( ceilDiv(64, 16) )}, iS100{( ceilDiv(64, 8) )}, rS102{( ceilDiv(32, 16) )}rf, iS99{16}, iS101{8}, rS103{16}rf ]
+  // const int warp_iter_axis_z = params.slice_k_factor > 1 ? 3 : 4; //params.split_k_factor > 1 ? 5 : 4;
+  const int warp_iter_axis_z = params.split_k_factor > 1 ? 5 : 4;
+  const int warp_iter_axis_y = warp_iter_axis_z + 1;
+  cc_rf->axis(warp_iter_axis_z)->parallelize(ParallelType::TIDz);
+  cc_rf->axis(warp_iter_axis_y)->parallelize(ParallelType::TIDy);
+  std::cout << "after parallelize, cc_rf= " << cc_rf->toString() << std::endl;
 
   scheduler_utils::parallelizeAllLike(
       cc,
@@ -727,6 +801,7 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
           params.async_gmem_load_operands,
           "Circular buffer only supports async load");
     }
+    std::cout << "after acw_smem= " << acw_smem->toString() << std::endl;
 
     acw_smem->circularBuffer(
         params.double_buffer_options.smem_double_buffer_stage);
@@ -738,21 +813,34 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     acr->doubleBuffer();
     bcr->doubleBuffer();
   }
+    std::cout << "after doubleBuffer reload = " << reload->toString() << std::endl;
 
-  scheduler_utils::BoundedDirectionalTransformPropagator::forward(
-      cc,
-      -1,
-      {c},
-      scheduler_utils::BoundedDirectionalTransformPropagator::Options()
-          .propagateParallelType()
-          .propagateToBoundary());
+  if(params.split_k_factor > 1){
+    // use different parallel pattern for split k reduction
+    // T5_l[ iS121{( ceilDiv(i0, 128) )}, iS123{( ceilDiv(i3, 128) )}, 
+    // rS120{3}, iS125{( ceilDiv(128, 64) )}, iS127{( ceilDiv(128, 64) )}, 
+    // iS129{( ceilDiv(64, 16) )}, iS131{( ceilDiv(64, 8) )}, iS130{16}, iS132{8} ]
+    cc->axis(-1)->parallelize(ParallelType::Vectorize);
+  }else{
+    scheduler_utils::BoundedDirectionalTransformPropagator::forward(
+        cc_rf,
+        -1,
+        {c},
+        scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+            .propagateParallelType()
+            .propagateToBoundary());
+  }
+
+    std::cout << "after BoundedDirectionalTransformPropagator cc_rd = " << cc_rd->toString() << std::endl;
 
   c->axis(-1)->parallelize(ParallelType::Vectorize);
 
   if (params.double_buffer_options.double_buffer_smem_read &&
       params.double_buffer_options.double_buffer_smem_write) {
-    scheduler_utils::rotateLoop(cc, 2, {acr, bcr});
+    scheduler_utils::rotateLoop(cc_rf, 2, {acr, bcr});
   }
+
+  inlineMost();
 }
 
 } // namespace nvfuser
