@@ -20,6 +20,59 @@
 
 namespace nvfuser {
 
+class TORCH_CUDA_CU_API UserAllocatedOutputsHolder {
+ public:
+  UserAllocatedOutputsHolder() = default;
+
+  void add(at::Tensor tensor, Val* val) {
+    TORCH_INTERNAL_ASSERT(val->isA<TensorView>());
+    map_.emplace(val, tensor);
+  }
+
+  size_t size() const {
+    return map_.size();
+  }
+
+  bool empty() const {
+    return size() == 0;
+  }
+
+  bool has(Val* val) const {
+    if (!val->isA<TensorView>()) {
+      return false;
+    }
+    return map_.find(val) != map_.end();
+  }
+
+  bool has(const std::vector<Val*>& vals) const {
+    for (auto val : vals) {
+      if (!has(val)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  at::Tensor get(Val* val) const {
+    TORCH_INTERNAL_ASSERT(val->isA<TensorView>());
+    auto it = map_.find(val);
+    TORCH_INTERNAL_ASSERT(it != map_.end());
+    return it->second;
+  }
+
+  std::vector<at::Tensor> get(const std::vector<Val*>& vals) const {
+    std::vector<at::Tensor> outputs;
+    outputs.reserve(vals.size());
+    for (auto val : vals) {
+      outputs.emplace_back(get(val));
+    }
+    return outputs;
+  }
+
+ private:
+  std::unordered_map<Val*, at::Tensor> map_;
+};
+
 TORCH_CUDA_CU_API bool shouldFillAllocationWithNan();
 TORCH_CUDA_CU_API void setFillAllocationWithNan(bool value);
 
@@ -97,7 +150,26 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
       KernelArgumentHolder& args,
       const LaunchParams& launch_constraints = LaunchParams(),
       CompileParams compile_params = CompileParams(),
-      std::vector<at::Tensor> outputs = {});
+      UserAllocatedOutputsHolder outputs_map = {});
+
+  std::vector<at::Tensor> runFusion(
+      KernelArgumentHolder& args,
+      const LaunchParams& launch_constraints,
+      CompileParams compile_params,
+      std::vector<at::Tensor> outputs) {
+    auto fusion_outputs = fusion_->outputs();
+    TORCH_INTERNAL_ASSERT(
+        fusion_outputs.size() == outputs.size(),
+        "Passed a raw vector of output tensors. So we need to assume they are in the same order and number as fusion->outputs(). "
+        "To pass only a few outputs, consider making a \"UserAllocatedOutputsHolder\"");
+
+    UserAllocatedOutputsHolder outputs_map;
+    for (const auto i : c10::irange(outputs.size())) {
+      outputs_map.add(outputs[i], fusion_outputs[i]);
+    }
+
+    return runFusion(args, launch_constraints, compile_params, outputs_map);
+  }
 
   std::vector<at::Tensor> runFusion(
       const at::ArrayRef<c10::IValue>& inputs,

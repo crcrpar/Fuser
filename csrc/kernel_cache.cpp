@@ -424,7 +424,8 @@ FusionKernelRuntime::FusionKernelRuntime(
 
 std::vector<at::Tensor> FusionKernelRuntime::runKernelWithInput(
     KernelArgumentHolder& args,
-    SegmentedGroup* sg) {
+    SegmentedGroup* sg,
+    const UserAllocatedOutputsHolder& outputs) {
   FUSER_PERF_SCOPE("FusionKernelRuntime::runKernelWithInput");
   std::lock_guard<std::mutex> guard(mutex_);
   // This function will be called once on un-segmented fusion,
@@ -448,7 +449,14 @@ std::vector<at::Tensor> FusionKernelRuntime::runKernelWithInput(
     executor.setMeasureKernelTimeFlag(true);
   }
 
-  auto outputs = executor.runFusion(args, launch_params, compile_params);
+  if (!outputs.empty()) {
+    TORCH_INTERNAL_ASSERT(
+        sg->outputs().size() == outputs.size(),
+        "runKernelWithInput: mismatch in number of outputs provided and number of fusion outputs");
+  }
+
+  auto fusion_outputs =
+      executor.runFusion(args, launch_params, compile_params, outputs);
 
   // Print relevant information all at once for easy debuging of perf
   if (isDebugDumpEnabled(DebugDumpOption::PerfDebugVerbose)) {
@@ -475,7 +483,7 @@ std::vector<at::Tensor> FusionKernelRuntime::runKernelWithInput(
     executor.setMeasureKernelTimeFlag(false);
   }
 
-  return outputs;
+  return fusion_outputs;
 }
 
 void FusionKernelRuntime::prepareRuntimeOrder() {
@@ -642,6 +650,17 @@ std::unordered_map<Val*, const ArgAbstract*> FusionKernelRuntime::
       }
     }
   }
+  return tensor_map;
+}
+
+UserAllocatedOutputsHolder FusionKernelRuntime::mapFusionOutputs(
+    const std::vector<at::Tensor>& outputs) {
+  UserAllocatedOutputsHolder tensor_map;
+
+  for (const auto i : c10::irange(outputs.size())) {
+    tensor_map.add(outputs[i], segmented_fusion_->outputs()[i]);
+  }
+
   return tensor_map;
 }
 

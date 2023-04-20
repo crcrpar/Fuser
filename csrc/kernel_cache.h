@@ -155,7 +155,8 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
   //! the kernel outputs.
   std::vector<at::Tensor> runKernelWithInput(
       KernelArgumentHolder& args,
-      SegmentedGroup* sg);
+      SegmentedGroup* sg,
+      const UserAllocatedOutputsHolder& outputs = {});
 
   //! Interface to compile a single kernel and returns the kernel outputs
   //! but the tensor does not own memory.
@@ -169,6 +170,9 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
   //! after this function and use it with caution.
   std::unordered_map<Val*, const ArgAbstract*> mapFusionInputsToArgs(
       KernelArgumentHolder& args);
+
+  UserAllocatedOutputsHolder mapFusionOutputs(
+      const std::vector<at::Tensor>& outputs);
 
   //! Interface to compile a single kernel. It is either a single kernel for a
   //! fusion or a kernel for a segmentedGrouup in a segmented fusion. Returns
