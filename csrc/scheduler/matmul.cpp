@@ -750,28 +750,7 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
       {acr, bcr, ab, bb, a, b},
       {ParallelType::TIDy, ParallelType::TIDz});
 
-  // Propagate mma output swizzle and parallelization down the DAG
-  if (params.double_buffer_options.double_buffer_smem_write) {
-    TORCH_INTERNAL_ASSERT(
-        params.double_buffer_options.smem_double_buffer_stage > 1,
-        "Invalid buffer stage config")
-    if (params.double_buffer_options.smem_double_buffer_stage > 2) {
-      TORCH_INTERNAL_ASSERT(
-          params.async_gmem_load_operands,
-          "Circular buffer only supports async load");
-    }
-    std::cout << "after acw_smem= " << acw_smem->toString() << std::endl;
 
-    acw_smem->circularBuffer(
-        params.double_buffer_options.smem_double_buffer_stage);
-    bcw_smem->circularBuffer(
-        params.double_buffer_options.smem_double_buffer_stage);
-  }
-
-  if (params.double_buffer_options.double_buffer_smem_read) {
-    acr->doubleBuffer();
-    bcr->doubleBuffer();
-  }
     std::cout << "after doubleBuffer tmp_gmem_consumer = " << tmp_gmem_consumer->toString() << std::endl;
 
 
@@ -845,6 +824,29 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
 
   inlineMost();
 
+
+  // Propagate mma output swizzle and parallelization down the DAG
+  if (params.double_buffer_options.double_buffer_smem_write) {
+    TORCH_INTERNAL_ASSERT(
+        params.double_buffer_options.smem_double_buffer_stage > 1,
+        "Invalid buffer stage config")
+    if (params.double_buffer_options.smem_double_buffer_stage > 2) {
+      TORCH_INTERNAL_ASSERT(
+          params.async_gmem_load_operands,
+          "Circular buffer only supports async load");
+    }
+    std::cout << "after acw_smem= " << acw_smem->toString() << std::endl;
+
+    acw_smem->circularBuffer(
+        params.double_buffer_options.smem_double_buffer_stage);
+    bcw_smem->circularBuffer(
+        params.double_buffer_options.smem_double_buffer_stage);
+  }
+
+  if (params.double_buffer_options.double_buffer_smem_read) {
+    acr->doubleBuffer();
+    bcr->doubleBuffer();
+  }
 }
 
 } // namespace nvfuser
