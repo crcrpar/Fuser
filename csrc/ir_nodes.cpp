@@ -2962,6 +2962,11 @@ void TensorDomain::merge(int axis_o, int axis_i) {
   resetDomains();
 }
 
+void TensorDomain::resetToRootDomains(){
+  domain_ = root_domain_;
+  resetDomains();
+}
+
 // Reorder axes according to map[old_pos] = new_pos
 void TensorDomain::reorder(const std::unordered_map<int, int>& old2new_) {
   TORCH_INTERNAL_ASSERT(

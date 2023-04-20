@@ -544,6 +544,9 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   // example, grouping multiple reductions.
   void updateMaxProducerPosition();
 
+  // reset domain to the original domain
+  void reset();
+
  protected:
   void setDomain(TensorDomain* td) {
     domain_ = td;

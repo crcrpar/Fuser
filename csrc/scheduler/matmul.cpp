@@ -477,50 +477,7 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
       MmaBuilder(params.mma_macro, params.tile_sizes).layout(layout);
   const auto& gemm_tile = params.tile_sizes;
 
-  // Including current tensor naming convention for reference,
-  //  this is very temporary and will change over time and
-  //  in fact the whole body of this function will
-  //  eventually be a set of utility functions for different
-  //  sections of matmul(fusion) kernels, with
-  //  each having its own build out to do.
-  //
-  // Current naming convention:
-  //
-  //  operands assumed in global memory : a, b
-  //
-  //  registers staging global load : ar, br (short for a/b read)
-  //
-  //  shared mem cache of operands : acw_smem, bcw_smem (short for a/b
-  //  cache_write smem)
-  //
-  //  registers at shared memory load output : acr, bcr (short for a/b cache
-  //  read)
-  //
-  //  register tensor input to the actual mma op: ab, bb (short for a/b
-  //  broadcasted)
-  //
-  //  accumulator register: cc (short for c cache)
-  //
-  //  result in global memory: c
-
-  // Currently only support a, b, c as fusion inputs/outputs
-  //  aka. no prolog and epilog fusion yet.
-
   mma_builder.configureMma(c);
-
-  // TODO:
-  // Beyond this point, mma_builder really just becomes a populated
-  //  list of parameters to describe the mma swizzles that should
-  //  be annotated on the tensor domain. Conceptually the mma builder
-  //  object should be separated to 2 parts, one as scheduler utility
-  //  and the other as matmul heuristic parameters, which we are
-  //  starting to build out.
-
-  // Setup register and shared memory stages:
-  //   TODO: this section goes to a separate matmul util,
-  //   and needs more configurability.
-
-  // Setup accumulator register.
   auto cc = c->cacheBefore();
 
   // Get the input to the mma op.
@@ -534,15 +491,11 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
 
   // Staging register for global memory load
   TensorView *ar = a, *br = b;
-
   if (!params.async_gmem_load_operands) {
     ar = a->cacheAfter();
     br = b->cacheAfter();
   }
 
-  // TODO:
-  //  Significant build out needed here
-  //   for more flexibility and data type support.
   // Shared memory
   TensorView* acw_smem = nullptr;
   TensorView* bcw_smem = nullptr;
@@ -550,13 +503,6 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   TensorView* acr = nullptr;
   TensorView* bcr = nullptr;
 
-  // Different paths because Volta swizzle needs to
-  //  involve the broadcast dimensions that are concretized
-  //  at mma, while Ampere ones should be done before
-  //  the broadcast op to be able to use cp.async.
-  // TODO:
-  // Also a few additional parameters should be introduced
-  // to control this stage of scheduling.
   if (isVolta(mma_options.macro)) {
     acw_smem = ab->cacheAfter();
     bcw_smem = bb->cacheAfter();
@@ -667,15 +613,10 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
       cc_rf, -1, {acw_smem, bcw_smem}, {cc_rd});
     std::cout << "Propagate warp tile  reload= " << reload->toString() << std::endl;
 
-  // Schedule prolog:
-  //   TODO: this section needs more configurability.
   // ------------------------------------------------------------------
   scheduleProlog(acw_smem, params);
   scheduleProlog(bcw_smem, params);
 
-  // Set computeAt, setup the loop nesting structure on the kernel.
-  //   TODO: this section goes to a separate matmul util,
-  //   and needs more configurability.
   // ------------------------------------------------------------------
   // CTA tile:
 
@@ -784,6 +725,10 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   cc_rf->axis(warp_iter_axis_z)->parallelize(ParallelType::TIDz);
   cc_rf->axis(warp_iter_axis_y)->parallelize(ParallelType::TIDy);
   std::cout << "after parallelize, cc_rf= " << cc_rf->toString() << std::endl;
+    std::cout << "before inlineMost= " << reload->toString() << std::endl;
+
+  inlineMost();
+    std::cout << "after inlineMost= " << reload->toString() << std::endl;
 
   scheduler_utils::parallelizeAllLike(
       cc,
@@ -815,12 +760,55 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   }
     std::cout << "after doubleBuffer reload = " << reload->toString() << std::endl;
 
+
   if(params.split_k_factor > 1){
-    // use different parallel pattern for split k reduction
-    // T5_l[ iS121{( ceilDiv(i0, 128) )}, iS123{( ceilDiv(i3, 128) )}, 
-    // rS120{3}, iS125{( ceilDiv(128, 64) )}, iS127{( ceilDiv(128, 64) )}, 
-    // iS129{( ceilDiv(64, 16) )}, iS131{( ceilDiv(64, 8) )}, iS130{16}, iS132{8} ]
-    cc->axis(-1)->parallelize(ParallelType::Vectorize);
+    std::vector<TensorView*> tvs_after_mma = {cc, reload};
+    for(auto tv : tvs_after_mma){
+      // clear transforms
+      tv->reset();
+      // T5_l[ iS118{i0}, iS119{i3}, rS120{4} ]
+      std::cout << "after resetToRootDomains tv = " << tv->toString() << std::endl;
+      tv->split(0, gemm_tile.cta_tile.m);
+      tv->split(-2, gemm_tile.cta_tile.n);
+      // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS259{128}, iS260{( ceilDiv(i3, 128) )}, iS261{128}, rS120{4} ]
+      std::cout << "after resetToRootDomains split tv = " << tv->toString() << std::endl;
+      // T5_l[ iS121{( ceilDiv(i0, 128) )}, {128}, iS123{( ceilDiv(i3, 128) )}, {128}, {4}}
+      tv->reorder({{1, 2}});
+      // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS260{( ceilDiv(i3, 128) )}, iS259{128}, iS261{128}, rS120{4} ]
+      tv->split(-2, 32);
+      tv->split(-3, 2);
+      tv->split(2, params.split_k_factor);
+    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS260{( ceilDiv(i3, 128) )}, 
+    // iS266{( ceilDiv(128, 4) )}, iS267{4}, iS264{( ceilDiv(( ceilDiv(128, 32) ), 2) )}, iS265{2}, iS263{32}, rS120{4} ]
+      std::cout << "after resetToRootDomains split reorder tv = " << tv->toString() << std::endl;
+      int axis = -1;
+      tv->axis(axis--)->parallelize(ParallelType::Vectorize);
+      tv->axis(axis--)->parallelize(ParallelType::TIDx);
+      tv->axis(axis--)->parallelize(ParallelType::TIDy);
+      tv->axis(axis--)->parallelize(ParallelType::TIDz);
+      tv->axis(axis--)->parallelize(ParallelType::BIDz);
+      tv->axis(axis--)->parallelize(ParallelType::Serial);
+      tv->axis(axis--)->parallelize(ParallelType::BIDy);
+      tv->axis(axis--)->parallelize(ParallelType::BIDx);
+    }
+    // set c
+    c->reset();
+    c->split(0, gemm_tile.cta_tile.m);
+    c->split(-1, gemm_tile.cta_tile.n);    
+    c->reorder({{1, 2}});
+    c->split(-1, 32);
+    c->split(-2, 2);
+    c->split(2, params.split_k_factor);
+    int axis = -1;
+    c->axis(axis--)->parallelize(ParallelType::TIDx);
+    c->axis(axis--)->parallelize(ParallelType::TIDy);
+    c->axis(axis--)->parallelize(ParallelType::TIDz);
+    c->axis(axis--)->parallelize(ParallelType::BIDz);
+    c->axis(axis--)->parallelize(ParallelType::Serial);
+    c->axis(axis--)->parallelize(ParallelType::BIDy);
+    c->axis(axis--)->parallelize(ParallelType::BIDx);
+    // correct
+    cc->axis(-1)->parallelize(ParallelType::Serial);
   }else{
     scheduler_utils::BoundedDirectionalTransformPropagator::forward(
         cc_rf,

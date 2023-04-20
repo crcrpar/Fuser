@@ -875,6 +875,14 @@ TensorView* TensorView::reorder(const std::unordered_map<int, int>& old2new_) {
   return this;
 }
 
+void TensorView::reset() {
+  domain()->resetToRootDomains();
+  compute_at_pos_ = 0;
+  max_producer_pos_ = 0;
+  compute_with_pos_ = 0;
+  maybe_max_producer_pos_ = 0;
+}
+
 TensorView* TensorView::swizzle(
     Swizzle2DType swizzle_type,
     int x,

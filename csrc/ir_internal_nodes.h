@@ -1920,7 +1920,12 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
 
   // pair is in order where second is the consumer of first
   std::pair<TensorDomain*, TensorDomain*> rFactor(const std::vector<int>& axes);
-
+  // void resetDomains() {
+  //   no_reduction_domain_ = noReductions(domain_);
+  //   no_bcast_domain_ = noBroadcasts(domain_);
+  //   has_reduction_ = hasReduction(domain_);
+  // }
+  void resetToRootDomains();
  private:
   const std::vector<IterDomain*> root_domain_;
   std::vector<IterDomain*> domain_;
