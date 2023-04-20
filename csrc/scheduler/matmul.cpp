@@ -578,40 +578,42 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   mma_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
 
   std::cout << "after scheduleWarpTileWithReduction, cc= " << cc->toString() << std::endl;
-  TensorView* cc_rf = cc; //mma
-  TensorView* cc_rd = c; //output
-  TensorView* reload = nullptr;
+  TensorView* tmp_gmem_producer = cc; //mma
+  TensorView* tmp_gmem = c; //output
+  TensorView* tmp_gmem_consumer = cc;
+  // tmp_gmem_producer -> tmp_gmem[g] -> tmp_gmem_consumer -> cc
   if(params.split_k_factor > 1){
     //cc= T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS29{2}, rS30{( ceilDiv(( ceilDiv(i2, 32) ), 2) )}, rS95{( ceilDiv(32, 16) )}, 
     // iS87{( ceilDiv(128, 64) )}, iS89{( ceilDiv(128, 64) )}, iS91{( ceilDiv(64, 16) )}, iS93{( ceilDiv(64, 8) )}, iS92{16}, iS94{8}, rS96{16} ]
-    // cc_rf = cc->rFactor({-9, -8, -1});
-    cc_rd = cc->rFactor({-9, -8, -1});
-    cc_rf = cc_rd->cacheBefore();
-    cc_rd->setMemoryType(MemoryType::Global);
-    reload = cc_rd->cacheAfter();
-    mma_builder.accumulatorTv(cc_rf);
-    std::cout << "cc_rf= " << cc_rf->toString() << std::endl;
-    std::cout << "cc_rd= " << cc_rd->toString() << std::endl;
-    for(auto id : cc_rd->getRootDomain()){
-      std::cout << "cc_rd root= " << id->toString() << std::endl;
+    // tmp_gmem_producer = cc->rFactor({-9, -8, -1});
+    tmp_gmem = cc->rFactor({-9, -8, -1});
+    tmp_gmem_producer = tmp_gmem->cacheBefore();
+    tmp_gmem->setMemoryType(MemoryType::Global);
+    tmp_gmem_consumer = tmp_gmem->cacheAfter();
+    mma_builder.accumulatorTv(tmp_gmem_producer);
+    std::cout << "tmp_gmem_producer= " << tmp_gmem_producer->toString() << std::endl;
+    std::cout << "tmp_gmem= " << tmp_gmem->toString() << std::endl;
+    for(auto id : tmp_gmem->getRootDomain()){
+      std::cout << "tmp_gmem root= " << id->toString() << std::endl;
     }
-    std::cout << "reload= " << reload->toString() << std::endl;
+    std::cout << "tmp_gmem_consumer= " << tmp_gmem_consumer->toString() << std::endl;
   }
 
 
 // T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS27{( ceilDiv(i2, 256) )}, iS81{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, 
 // rS73{( ceilDiv(256, 32) )}, iS75{( ceilDiv(64, 16) )}, iS77{( ceilDiv(64, 8) )}, rS79{( ceilDiv(32, 16) )}, iS76{16}, iS78{8}, rS80{16} ]
   if(params.slice_k_factor > 1){
-    cc_rf = cc->rFactor({-9, -4, -1});
-    mma_builder.accumulatorTv(cc_rf);
+    tmp_gmem_producer = cc->rFactor({-9, -4, -1});
+    mma_builder.accumulatorTv(tmp_gmem_producer);
     // T10_l[ iS85{( ceilDiv(i0, 128) )}, iS87{( ceilDiv(i3, 128) )}, rS89{( ceilDiv(i2, 256) )}rf, iS95{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, 
     // iS96{( ceilDiv(256, 32) )}rf, iS98{( ceilDiv(64, 16) )}, iS100{( ceilDiv(64, 8) )}, rS102{( ceilDiv(32, 16) )}rf, iS99{16}, iS101{8}, rS103{16}rf ]
-    std::cout << "after rFactor, rf= " << cc_rf->toString() << std::endl;
+    std::cout << "after rFactor, rf= " << tmp_gmem_producer->toString() << std::endl;
   }
+    std::cout << "before warp tile  tmp_gmem_consumer= " << tmp_gmem_consumer->toString() << std::endl;
   // Propagate warp tile to main loop and epilog/output tvs
   scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
-      cc_rf, -1, {acw_smem, bcw_smem}, {cc_rd});
-    std::cout << "Propagate warp tile  reload= " << reload->toString() << std::endl;
+      tmp_gmem_producer, -1, {acw_smem, bcw_smem}, {tmp_gmem});
+    std::cout << "Propagate warp tile  tmp_gmem_consumer= " << tmp_gmem_consumer->toString() << std::endl;
 
   // ------------------------------------------------------------------
   scheduleProlog(acw_smem, params);
@@ -620,24 +622,15 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // ------------------------------------------------------------------
   // CTA tile:
 
-  // a->computeAt(c, 2);
-  // b->computeAt(c, 2);
 
-  // // Prolog:
-  // const int prolog_loop_pos = params.split_k_factor > 1 ? 4 : 3;
-  // a->computeAt(cc_rf, prolog_loop_pos);
-  // b->computeAt(cc_rf, prolog_loop_pos);
 
-  // // Main Loop:
-  // const int main_loop_pos = params.slice_k_factor > 1 ? -7 : -6;
-  // acr->computeAt(cc_rf, main_loop_pos);
-  // bcr->computeAt(cc_rf, main_loop_pos);
+
 
   // T4_g[ iS65{( ceilDiv(i0, 128) )}, iS67{( ceilDiv(i3, 128) )}, iS66{128}, iS68{128} ] produce_pos( 2 )
   std::cout << "computeAt, a= " << a->toString() << std::endl;
   std::cout << "computeAt, c= " << c->toString() << std::endl;
   std::cout << "computeAt, acr= " << acr->toString() << std::endl;
-    std::cout << "computeAt  reload= " << reload->toString() << std::endl;
+    std::cout << "computeAt  tmp_gmem_consumer= " << tmp_gmem_consumer->toString() << std::endl;
   // T5_l[ iblockIdx.x23{( ceilDiv(i0, 128) )}, iblockIdx.y25{( ceilDiv(i3, 128) )}, 
   // rS27{( ceilDiv(i2, 32) )}, rS77{( ceilDiv(32, 16) )}, 
   // ithreadIdx.z69{( ceilDiv(128, 64) )}, ithreadIdx.y71{( ceilDiv(128, 64) )}, 
@@ -651,7 +644,7 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
 
   //T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS27{( ceilDiv(i2, 64) )}, iS81{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, rS73{( ceilDiv(64, 32) )}, iS75{( ceilDiv(64, 16) )}, 
   // iS77{( ceilDiv(64, 8) )}, rS79{( ceilDiv(32, 16) )}, iS76{16}, iS78{8}, rS80{16} ]
-  std::cout << "computeAt, cc_rf= " << cc_rf->toString() << std::endl;
+  std::cout << "computeAt, tmp_gmem_producer= " << tmp_gmem_producer->toString() << std::endl;
 
   // Add mma swizzle:
   //   TODO: this section goes to a separate matmul util,
@@ -661,11 +654,11 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     moveInnerBroadcastLeft(ab);
     moveInnerBroadcastLeft(bb);
   }
-    std::cout << "moveInnerBroadcastLeft  reload= " << reload->toString() << std::endl;
+    std::cout << "moveInnerBroadcastLeft  tmp_gmem_consumer= " << tmp_gmem_consumer->toString() << std::endl;
 
   ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
   bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
-    std::cout << "before propagateParallelType reload = " << reload->toString() << std::endl;
+    std::cout << "before propagateParallelType tmp_gmem_consumer = " << tmp_gmem_consumer->toString() << std::endl;
 
   // Propagate mma input swizzle up the DAG
   //  to all the tensors before mma op and after shared mem read.
@@ -681,10 +674,10 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
       {bcw_smem},
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
           .propagateParallelType());
-    std::cout << "after propagateParallelType cc_rd = " << cc_rd->toString() << std::endl;
-    std::cout << "after propagateParallelType reload = " << reload->toString() << std::endl;
+    std::cout << "after propagateParallelType tmp_gmem = " << tmp_gmem->toString() << std::endl;
+    std::cout << "after propagateParallelType tmp_gmem_consumer = " << tmp_gmem_consumer->toString() << std::endl;
 
-  cc_rf->applyMmaSwizzle(
+  tmp_gmem_producer->applyMmaSwizzle(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
 
   // Set parallelization:
@@ -700,12 +693,12 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // [Mo No Ko Kwo Mwo Nwo Mw Nw (Mi Ni Ki)]
   switch (params.cta_order) {
     case MatmulParams::TileRasterizationOrder::RowMajor:
-      cc_rf->axis(0)->parallelize(ParallelType::BIDx);
-      cc_rf->axis(1)->parallelize(ParallelType::BIDy);
+      tmp_gmem_producer->axis(0)->parallelize(ParallelType::BIDx);
+      tmp_gmem_producer->axis(1)->parallelize(ParallelType::BIDy);
       break;
     case MatmulParams::TileRasterizationOrder::ColumnMajor:
-      cc_rf->axis(0)->parallelize(ParallelType::BIDy);
-      cc_rf->axis(1)->parallelize(ParallelType::BIDx);
+      tmp_gmem_producer->axis(0)->parallelize(ParallelType::BIDy);
+      tmp_gmem_producer->axis(1)->parallelize(ParallelType::BIDx);
       break;
     default:
       TORCH_INTERNAL_ASSERT(
@@ -714,7 +707,7 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
 
   if(params.split_k_factor > 1){
     constexpr int split_k_axis = 2;
-    cc_rf->axis(split_k_axis)->parallelize(ParallelType::BIDz);
+    tmp_gmem_producer->axis(split_k_axis)->parallelize(ParallelType::BIDz);
   }
   // T10_l[ iS85{( ceilDiv(i0, 128) )}, iS87{( ceilDiv(i3, 128) )}, rS89{( ceilDiv(i2, 256) )}rf, 
   // iS95{( ( ceilDiv(128, 64) ) * ( ceilDiv(128, 64) ) )}, iS96{( ceilDiv(256, 32) )}rf, 
@@ -722,14 +715,35 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // const int warp_iter_axis_z = params.slice_k_factor > 1 ? 3 : 4; //params.split_k_factor > 1 ? 5 : 4;
   const int warp_iter_axis_z = params.split_k_factor > 1 ? 5 : 4;
   const int warp_iter_axis_y = warp_iter_axis_z + 1;
-  cc_rf->axis(warp_iter_axis_z)->parallelize(ParallelType::TIDz);
-  cc_rf->axis(warp_iter_axis_y)->parallelize(ParallelType::TIDy);
-  std::cout << "after parallelize, cc_rf= " << cc_rf->toString() << std::endl;
-    std::cout << "before inlineMost= " << reload->toString() << std::endl;
+  tmp_gmem_producer->axis(warp_iter_axis_z)->parallelize(ParallelType::TIDz);
+  tmp_gmem_producer->axis(warp_iter_axis_y)->parallelize(ParallelType::TIDy);
+  std::cout << "after parallelize, tmp_gmem_producer= " << tmp_gmem_producer->toString() << std::endl;
+  std::cout << "after parallelize, tmp_gmem= " << tmp_gmem->toString() << std::endl;
+  if(params.split_k_factor > 1){
+    scheduler_utils::BoundedDirectionalTransformPropagator::forward(
+        tmp_gmem_producer,
+        -1,
+        {tmp_gmem},
+        scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+            .propagateParallelType()
+            .propagateToBoundary());
+  std::cout << "after BDTP, tmp_gmem= " << tmp_gmem->toString() << std::endl;
+  }
+  // a->computeAt(c, 2);
+  // b->computeAt(c, 2);
 
-  inlineMost();
-    std::cout << "after inlineMost= " << reload->toString() << std::endl;
-
+  // // Prolog:
+  // const int prolog_loop_pos = params.split_k_factor > 1 ? 4 : 3;
+  // a->computeAt(tmp_gmem_producer, prolog_loop_pos);
+  // b->computeAt(tmp_gmem_producer, prolog_loop_pos);
+  //   std::cout << "after inlineMost= " << tmp_gmem_consumer->toString() << std::endl;
+  // // Main Loop:
+  // const int main_loop_pos = params.split_k_factor > 1 ? -4 : -6;
+  // std::cout << "before ca acr= " << acr->toString() << std::endl;
+  // acr->computeAt(tmp_gmem_producer, main_loop_pos);
+  // bcr->computeAt(tmp_gmem_producer, main_loop_pos);
+  std::cout << "after ca acr= " << acr->toString() << std::endl;
+  std::cout << "tmp_gmem_producer= " << tmp_gmem_producer->toString() << std::endl;
   scheduler_utils::parallelizeAllLike(
       cc,
       -1,
@@ -758,11 +772,11 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     acr->doubleBuffer();
     bcr->doubleBuffer();
   }
-    std::cout << "after doubleBuffer reload = " << reload->toString() << std::endl;
+    std::cout << "after doubleBuffer tmp_gmem_consumer = " << tmp_gmem_consumer->toString() << std::endl;
 
 
   if(params.split_k_factor > 1){
-    std::vector<TensorView*> tvs_after_mma = {cc, reload};
+    std::vector<TensorView*> tvs_after_mma = {cc, tmp_gmem_consumer};
     for(auto tv : tvs_after_mma){
       // clear transforms
       tv->reset();
@@ -811,24 +825,26 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     cc->axis(-1)->parallelize(ParallelType::Serial);
   }else{
     scheduler_utils::BoundedDirectionalTransformPropagator::forward(
-        cc_rf,
+        tmp_gmem_producer,
         -1,
         {c},
         scheduler_utils::BoundedDirectionalTransformPropagator::Options()
             .propagateParallelType()
             .propagateToBoundary());
+    c->axis(-1)->parallelize(ParallelType::Vectorize);
+            std::cout << "c= " << c->toString() << std::endl;
   }
 
-    std::cout << "after BoundedDirectionalTransformPropagator cc_rd = " << cc_rd->toString() << std::endl;
+    std::cout << "after BoundedDirectionalTransformPropagator tmp_gmem = " << tmp_gmem->toString() << std::endl;
 
-  c->axis(-1)->parallelize(ParallelType::Vectorize);
 
   if (params.double_buffer_options.double_buffer_smem_read &&
       params.double_buffer_options.double_buffer_smem_write) {
-    scheduler_utils::rotateLoop(cc_rf, 2, {acr, bcr});
+    scheduler_utils::rotateLoop(tmp_gmem_producer, 2, {acr, bcr});
   }
 
   inlineMost();
+
 }
 
 } // namespace nvfuser

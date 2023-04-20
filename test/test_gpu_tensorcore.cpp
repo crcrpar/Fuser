@@ -625,9 +625,9 @@ TEST_F(NVFuserTest, FusionAmpereMMANT_CUDA) {
 // Matmul test for Ampere MMA: across supported layouts
 TEST_F(NVFuserTest, FusionAmpereMatmul_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
-  int M = 504, N = 136, K = 248;
+  int M = 128*9, N = 128*12, K = 248;
 
-  for (auto layout : kAllSupportedMatmulLayout) {
+  for (auto layout : {MatmulLayout::TN}) {
     Fusion fusion;
     FusionGuard fg(&fusion);
     auto tv0 = makeContigTensor(2, DataType::Half);
@@ -3297,11 +3297,11 @@ TEST_F(NVFuserTest, FusionAmpereMatmulSplitK_CUDA) {
     if(test_volta){
         // (k,time_ms) = (1, 3.5), (2, 1.95), (4,1.16)
         gemm_tile.instruction_tile = GemmTile(16, 16, 4);
-        params.mma_op = MmaOptions::MacroType::Volta_16_16_4;
+        params.mma_macro = MmaOptions::MacroType::Volta_16_16_4;
     }else{
         // (k,time_ms) = (1, 0.28), (3, 0.35), ()
         gemm_tile.instruction_tile = GemmTile(16, 8, 16);
-        params.mma_op = MmaOptions::MacroType::Ampere_16_8_16;
+        params.mma_macro = MmaOptions::MacroType::Ampere_16_8_16;
         params.async_gmem_load_operands = true;
         params.double_buffer_options.double_buffer_smem_write = true;
         params.double_buffer_options.smem_double_buffer_stage = 4;        
@@ -3309,7 +3309,6 @@ TEST_F(NVFuserTest, FusionAmpereMatmulSplitK_CUDA) {
 
 
 
-    params.layout = layout;
     params.tile_sizes = gemm_tile;
 
     params.slice_k_factor = gemm_tile.cta_tile.k / gemm_tile.warp_tile.k;

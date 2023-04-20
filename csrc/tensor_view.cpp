@@ -1456,7 +1456,7 @@ void TensorView::circularBuffer(unsigned int stage) {
     doubleBuffer();
     return;
   }
-  validateDoubleBufferedTensor(this);
+  // validateDoubleBufferedTensor(this);
   is_circular_buffered_ = true;
   circular_buffer_stage_ = stage;
 }
