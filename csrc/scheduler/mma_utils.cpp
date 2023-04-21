@@ -734,7 +734,6 @@ bool checkLdMatrixTv(TensorView* tv) {
   bool is_immediate_output = true;
   if (!ir_utils::isLdMatrixOp(tv_def)) {
     // Only allow one broadcast in between tv and the ldmatrix op
-  std::cout << "tv= " << tv->toString() << " definition= " << tv->definition() << std::endl;
     TORCH_CHECK(
         tv_def->isA<BroadcastOp>(),
         "ldmatrix: only allow serial broadcast between ldmatrix and mma");
@@ -784,13 +783,11 @@ void scheduleVoltaA(TensorView* tv, MmaOptions options) {
     // -6   -5    -4  -3  -2  -1
     //[Mo4, No2, Noo,  K, Ni8, Mi4]
   }
-  std::cout << "scheduleVoltaA tv= " << tv->toString() << std::endl;
 
   tv->merge(-6);
   tv->merge(-5);
   tv->merge(-4);
 
-  std::cout << "scheduleVoltaA tv= " << tv->toString() << std::endl;
 
   //[Warp, Ni8, K/Mi4]
   tv->axis(-3)->parallelize(ParallelType::TIDx);
@@ -880,7 +877,6 @@ void scheduleLdMatrix(TensorView* tv, MmaOptions options) {
     tv->merge(-4);
     tv->merge(-3);
     // [warp, 8i/o]
-  std::cout << "scheduleLdMatrix tv= " << tv->toString() << std::endl;
 
     tv->axis(-2)->parallelize(ParallelType::TIDx);
   } else if (options.operand == MmaOptions::Operand::B) {

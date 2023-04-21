@@ -24,8 +24,6 @@ unsigned int getDoubleBufferAxisPosition(const TensorView* tv) {
   // at least one axis that is outside (left) of the CA position,
   // which defines the loop where prefetching is applied. Therefore,
   // the CA position must be larger than 0.
-  std::cout << "tv= " << tv->toString() << std::endl;
-  std::cout << "tv->getComputeAtPosition()= " << tv->getComputeAtPosition() << std::endl;
   TORCH_INTERNAL_ASSERT(tv->getComputeAtPosition() > 0);
 
   // Unroll must not exist outside of double-buffer axis
@@ -94,9 +92,6 @@ void validateDoubleBufferedTensor(const TensorView* tv) {
   // the double-buffering loop. Otherwise, the producer itself would
   // also need to be double-bufferred.
   auto producer = def->input(0)->as<TensorView>();
-  std::cout << "producer= " << producer->toString() << std::endl;
-  std::cout << "double_buffer_pos= " << double_buffer_pos << std::endl;
-  std::cout << "producer->getComputePosition(tv)= " << producer->getComputePosition(tv) << std::endl;
   TORCH_INTERNAL_ASSERT(
       producer->getComputePosition(tv) <= double_buffer_pos,
       "Invalid tensor to double-buffer. The computeAt position of the producer tensor must be moved left: ",

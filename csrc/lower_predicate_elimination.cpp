@@ -344,9 +344,6 @@ class PredicateChcker : public IterVisitor {
         if (producer->getMemoryType() == MemoryType::Shared ||
             consumer->getMemoryType() == MemoryType::Shared) {
           if (needSharedMemPredicate(producer, consumer)) {
-            std::cout << "predicate removal: need to predicate shared mem "
-                         "access for expr: "
-                      << expr->toString() << std::endl;
             return true;
           }
         }
@@ -365,7 +362,6 @@ class PredicateChcker : public IterVisitor {
     // If consumer schedule contains in-exact thread parallel
     //  dimensions, need to predicate against out of bound
     //  shared memory access by out of bound threads.
-    std::cout << "isExactParallelSharedMemAccess(consumer)= " << isExactParallelSharedMemAccess(consumer) << std::endl;
     if (!isExactParallelSharedMemAccess(consumer)) {
       return true;
     }
