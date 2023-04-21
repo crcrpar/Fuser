@@ -1782,9 +1782,6 @@ void BoundedDirectionalTransformPropagator::bothWays(
   auto forward_included_tvs = getDirectionalPropagatePathSet(
       from, forward_to, *options, PropagateDirection::Forward);
 
-  for(auto tv : backward_included_tvs) std::cout << "backward_included_tvs= " << tv->toString() << std::endl;
-  for(auto tv : forward_included_tvs)  std::cout << "forward_included_tvs= " << tv->toString() << std::endl;
-
   // Combined the included tvs on both paths.
   auto included_tvs = backward_included_tvs;
   included_tvs.insert(forward_included_tvs.begin(), forward_included_tvs.end());

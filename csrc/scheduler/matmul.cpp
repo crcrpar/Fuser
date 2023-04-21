@@ -5,11 +5,11 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 // clang-format on
+#include <inlining.h>
 #include <scheduler/matmul.h>
 #include <scheduler/mma_utils.h>
 #include <scheduler/registry.h>
 #include <scheduler/utils.h>
-#include <inlining.h>
 // NOTE: included to avoid compilation error caused by missing destructor in
 // 'SchedulerRuntimeInfo'
 #include <executor_utils.h>
@@ -595,6 +595,7 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // Make a CTA tile
   // ------------------------------------------------------------------
   mma_utils::canonicalizeMmaTvOrdering(cc);
+    std::cout << " canonicalizeMmaTvOrdering cc: " << cc->toString() << std::endl;
   // [... M,N,K]
   mma_utils::makeTile(cc, gemm_tile.cta_tile.toVector());
 
@@ -619,9 +620,10 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     }
   }
 
-  if(params.split_k_factor > 1){
+  const int k_axis = mma->kAxes()[0];
+
+  if (params.split_k_factor > 1) {
     cc->split(2, params.split_k_factor, false);
-    std::cout << "after split, cc= " << cc->toString() << std::endl;
   }
   // [Mo, No, Ko, Mi, Ni, Ki]
   // Propagate tiling globally
@@ -630,38 +632,39 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // Schedule warp tile
   mma_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
 
-  // tmp_gmem_producer -> tmp_gmem[g] -> tmp_gmem_consumer -> cc
-  TensorView* tmp_gmem_producer = cc; //mma results
-  TensorView* tmp_gmem = nullptr; //output
-  TensorView* tmp_gmem_consumer = nullptr;
+  // mma_result -> tmp_gmem[g] -> tmp_gmem_reload -> cc
+  TensorView* mma_result = cc; // mma results
+  TensorView* tmp_gmem = nullptr; // output
+  TensorView* tmp_gmem_reload = nullptr;
   std::vector<TensorView*> tvs_after_grid_sync{c};
-  if(params.split_k_factor > 1){
-    //cc= T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS29{2}, rS30{( ceilDiv(( ceilDiv(i2, 32) ), 2) )}, rS95{( ceilDiv(32, 16) )}, 
-    // iS87{( ceilDiv(128, 64) )}, iS89{( ceilDiv(128, 64) )}, iS91{( ceilDiv(64, 16) )}, iS93{( ceilDiv(64, 8) )}, iS92{16}, iS94{8}, rS96{16} ]
-    tmp_gmem = cc->rFactor({-9, -8, -1});
-    tmp_gmem_producer = tmp_gmem->cacheBefore();
+  if (params.split_k_factor > 1) {
+    std::cout << "cc: " << cc->toString() << std::endl;
+    // k = 1, MKN
+    // T5_l[ iS23{( ceilDiv(i0, 128) )}, iS29{4}, iS30{( ceilDiv(( ceilDiv(i4, 128) ), 4) )}, rS27{( ceilDiv(i2, 32) )}, rS91{( ceilDiv(32, 16) )}, iS83{( ceilDiv(128, 64) )}, iS85{( ceilDiv(128, 64) )}, iS87{( ceilDiv(64, 16) )}, iS89{( ceilDiv(64, 8) )}, iS88{16}, iS90{8}, rS92{16} ]
+    // k = 2, MNK
+    // T5_l[ iS23{( ceilDiv(i0, 128) )}, iS25{( ceilDiv(i3, 128) )}, rS29{4}, rS30{( ceilDiv(( ceilDiv(i2, 32) ), 4) )}, 
+    // rS95{( ceilDiv(32, 16) )}, iS87{( ceilDiv(128, 64) )}, iS89{( ceilDiv(128, 64) )}, iS91{( ceilDiv(64, 16) )}, iS93{( ceilDiv(64, 8) )}, iS92{16}, iS94{8}, rS96{16} ]    
+    tmp_gmem = cc->rFactor({3, 4, -1});
+    mma_result = tmp_gmem->cacheBefore();
     tmp_gmem->setMemoryType(MemoryType::Global);
-    tmp_gmem_consumer = tmp_gmem->cacheAfter();
-    mma_builder.accumulatorTv(tmp_gmem_producer);
-    tvs_after_grid_sync.emplace_back(tmp_gmem_consumer);
+    tmp_gmem_reload = tmp_gmem->cacheAfter();
+    mma_builder.accumulatorTv(mma_result);
+    tvs_after_grid_sync.emplace_back(tmp_gmem_reload);
     tvs_after_grid_sync.emplace_back(cc);
     // we must schedule cc to refactor out mma results
-    // we must reset cc to use a different parallel pattern for reduction of split-k tiles 
-    for(auto tv : tvs_after_grid_sync){
+    // we must reset cc to use a different parallel pattern for reduction of
+    // split-k tiles
+    for (auto tv : tvs_after_grid_sync) {
       tv->reset();
-    }    
-    std::cout << "tmp_gmem_producer= " << tmp_gmem_producer->toString() << std::endl;
-    std::cout << "tmp_gmem         = " << tmp_gmem->toString() << std::endl;
-    std::cout << "tmp_gmem_consumer= " << tmp_gmem_consumer->toString() << std::endl;    
+    }
     // Propagate warp tile to main loop
     scheduler_utils::BoundedDirectionalTransformPropagator::backward(
-        tmp_gmem_producer, -1, {acw_smem, bcw_smem});    
-  }else{
+        mma_result, -1, {acw_smem, bcw_smem});
+  } else {
     // Propagate warp tile to main loop and epilog/output tvs
     scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
         cc, -1, {acw_smem, bcw_smem}, {c});
-  }  
-
+  }
 
   // Schedule prolog:
   //   TODO: this section needs more configurability.
@@ -696,13 +699,14 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
           .propagateParallelType());
 
-  tmp_gmem_producer->applyMmaSwizzle(
+  mma_result->applyMmaSwizzle(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
 
   // Set parallelization:
   //   TODO: this section goes to a separate matmul util,
   //   and needs more configurability.
   // ------------------------------------------------------------------
+    std::cout << "acr: " << acr->toString() << std::endl;
 
   // Vectorize smem stores/loads:
   acr->axis(-1)->parallelize(ParallelType::Vectorize);
@@ -712,12 +716,12 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
   // [Mo No Ko Kwo Mwo Nwo Mw Nw (Mi Ni Ki)]
   switch (params.cta_order) {
     case MatmulParams::TileRasterizationOrder::RowMajor:
-      tmp_gmem_producer->axis(0)->parallelize(ParallelType::BIDx);
-      tmp_gmem_producer->axis(1)->parallelize(ParallelType::BIDy);
+      mma_result->axis(0)->parallelize(ParallelType::BIDx);
+      mma_result->axis(1)->parallelize(ParallelType::BIDy);
       break;
     case MatmulParams::TileRasterizationOrder::ColumnMajor:
-      tmp_gmem_producer->axis(0)->parallelize(ParallelType::BIDy);
-      tmp_gmem_producer->axis(1)->parallelize(ParallelType::BIDx);
+      mma_result->axis(0)->parallelize(ParallelType::BIDy);
+      mma_result->axis(1)->parallelize(ParallelType::BIDx);
       break;
     default:
       TORCH_INTERNAL_ASSERT(
@@ -726,76 +730,98 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
 
   const int warp_iter_axis_z = params.split_k_factor > 1 ? 5 : 4;
   const int warp_iter_axis_y = warp_iter_axis_z + 1;
-  tmp_gmem_producer->axis(warp_iter_axis_z)->parallelize(ParallelType::TIDz);
-  tmp_gmem_producer->axis(warp_iter_axis_y)->parallelize(ParallelType::TIDy);  
-  if(params.split_k_factor > 1){
+  mma_result->axis(warp_iter_axis_z)->parallelize(ParallelType::TIDz);
+  mma_result->axis(warp_iter_axis_y)->parallelize(ParallelType::TIDy);
+  if (params.split_k_factor > 1) {
     constexpr int split_k_axis = 2;
-    tmp_gmem_producer->axis(split_k_axis)->parallelize(ParallelType::BIDz);
+    mma_result->axis(split_k_axis)->parallelize(ParallelType::BIDz);
     scheduler_utils::BoundedDirectionalTransformPropagator::forward(
-        tmp_gmem_producer,
+        mma_result,
         -1,
         {tmp_gmem},
         scheduler_utils::BoundedDirectionalTransformPropagator::Options()
             .propagateParallelType()
-            .propagateToBoundary());    
+            .propagateToBoundary());
   }
   scheduler_utils::parallelizeAllLike(
-      tmp_gmem_producer,
+      mma_result,
       -1,
       {acr, bcr, ab, bb, a, b},
       {ParallelType::TIDy, ParallelType::TIDz});
 
-  // First part transformation and parallelization is done.
-  // Now we need to schedule the reduction part.
-  // we have blockDim.z = cta_tile_m / warp_tile_m, blockDim.y = cta_tile_n / warp_tile_n, blockDim.x = warp_size
-  // we have gridDim.z = split_k_factor, gridDim.y = ceilDiv(m, cta_tile_m), gridDim.x = ceilDiv(n, cta_tile_n), 
-  if(params.split_k_factor > 1){
+  // Up to here, first part transformation and parallelization is done.
+  // Now we need to schedule the reduction part in split-k
+  // we have blockDim.z = cta_tile_m / warp_tile_m, blockDim.y = cta_tile_n /
+  // warp_tile_n, blockDim.x = warp_size we have gridDim.z = split_k_factor,
+  // gridDim.y = ceilDiv(m, cta_tile_m), gridDim.x = ceilDiv(n, cta_tile_n),
+  if (params.split_k_factor > 1) {
     // step-1, transformation
     // T5_l[ iS118{i0}, iS119{i3}, rS120{4} ]
+    // move k_axis (reduction) to leftmost
+    // why k_axis is always 3 if fetched from here?
+    //const int k_axis = mma->kAxes()[0];
+    const int last_axis = cc->nDims() - 1;
+    std::cout << "cc: " << cc->toString() << std::endl;
+    std::cout << "k_axis: " << k_axis << " last_axis: " << last_axis<< std::endl;
+    if(k_axis != last_axis) {
+      cc->reorder({{k_axis, last_axis}});
+    }
+    std::cout << "cc: " << cc->toString() << std::endl;
     cc->split(0, gemm_tile.cta_tile.m);
     cc->split(-2, gemm_tile.cta_tile.n);
-    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS259{128}, iS260{( ceilDiv(i3, 128) )}, iS261{128}, rS120{4} ]
+    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS259{128}, iS260{( ceilDiv(i3, 128)
+    // )}, iS261{128}, rS120{4} ]
     cc->reorder({{1, 2}});
-    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS260{( ceilDiv(i3, 128) )}, iS259{128}, iS261{128}, rS120{4} ]
+    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS260{( ceilDiv(i3, 128) )},
+    // iS259{128}, iS261{128}, rS120{4} ]
     constexpr int warp_size = 32;
     cc->split(-2, warp_size);
     cc->split(-3, gemm_tile.cta_tile.n / gemm_tile.warp_tile.n);
-    cc->split(2, params.split_k_factor);
-    
-    // fails to propagate transformation to tmp_gmem_consumer and c
+    cc->split(2, params.split_k_factor); // we have k blocks in gridDim.z
+    std::cout << "cc: " << cc->toString() << std::endl;
+    std::cout << "tmp_gmem_reload: " << tmp_gmem_reload->toString() << std::endl;
+
+    const bool vectoriziable = k_axis == last_axis;
+    const int vectorization_factor = 16 / dataTypeSize(cc->getDataType().value());
+    if (vectoriziable && params.split_k_factor > vectorization_factor) {
+      cc->split(-1, vectorization_factor);
+    }
+    // fails to propagate transformation to tmp_gmem_reload and c
     // the included tv set only contains cc
     // scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
-    //     cc, -1, {tmp_gmem_consumer}, {c});
+    //     cc, -1, {tmp_gmem_reload}, {c});
     // allows propagte to boundary but can't propage from boundary
-    InternalBoundarySelector ibSelector({tmp_gmem_consumer});
+    InternalBoundarySelector ibSelector({tmp_gmem_reload});
     TransformPropagator propagator(cc);
-    MaxRootDomainInfoSpanningTree(cc, &ibSelector)
-        .traverse(&propagator);
-
-    for(auto tv : tvs_after_grid_sync){
-      std::cout << "tvs_after_mma= " << tv->toString() << std::endl;
-    }
+    MaxRootDomainInfoSpanningTree(cc, &ibSelector).traverse(&propagator);
 
     // step-2, parallelization
-    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS260{( ceilDiv(i3, 128) )}, 
-    // iS266{( ceilDiv(128, 4) )}, iS267{4}, iS264{( ceilDiv(( ceilDiv(128, 32) ), 2) )}, iS265{2}, iS263{32}, rS120{4} ]
+    // T5_l[ iS258{( ceilDiv(i0, 128) )}, iS260{( ceilDiv(i3, 128) )},
+    // iS266{( ceilDiv(128, 4) )}, iS267{4}, iS264{( ceilDiv(( ceilDiv(128, 32)
+    // ), 2) )}, iS265{2}, iS263{32}, rS120{4} ]
+    std::cout << "tmp_gmem_reload: " << tmp_gmem_reload->toString() << std::endl;
     int axis = -1;
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::Vectorize);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::TIDx);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::TIDy);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::TIDz);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::BIDz);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::Serial);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::BIDy);
-    tmp_gmem_consumer->axis(axis--)->parallelize(ParallelType::BIDx);
+    if (vectoriziable) {
+      tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::Vectorize);
+    }else{
+      tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::Unroll);
+    }
+    if (vectoriziable && params.split_k_factor > vectorization_factor) {
+      tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::Serial);
+    }
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::TIDx);
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::TIDy);
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::TIDz);
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::BIDz);
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::Serial);
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::BIDy);
+    tmp_gmem_reload->axis(axis--)->parallelize(ParallelType::BIDx);
     scheduler_utils::parallelizeAllLike(
-      tmp_gmem_consumer,
-      {cc, c},
-      allParallelTypesExcept({ParallelType::Vectorize}));
-    for(auto tv : tvs_after_grid_sync){
-      std::cout << "tvs_after_mma= " << tv->toString() << std::endl;
-    }      
-  }else{
+        tmp_gmem_reload,
+        {cc, c},
+        allParallelTypesExcept({ParallelType::Vectorize}));
+
+  } else {
     scheduler_utils::BoundedDirectionalTransformPropagator::forward(
         cc,
         -1,
@@ -807,10 +833,8 @@ void scheduleMatmul(Fusion* fusion, const MatmulParams& params) {
     c->axis(-1)->parallelize(ParallelType::Vectorize);
   }
 
-
-
   inlineMost(ir_utils::allTvsExcept(fusion, {acr, bcr, ab, bb, c}));
-  inlineSelectedAt({acr, bcr, ab, bb}, {cc}, 6);
+  inlineSelectedAt({acr, bcr, ab, bb}, {mma_result}, 6);
 
   // Propagate mma output swizzle and parallelization down the DAG
   if (params.double_buffer_options.double_buffer_smem_write) {

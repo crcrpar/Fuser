@@ -625,7 +625,7 @@ TEST_F(NVFuserTest, FusionAmpereMMANT_CUDA) {
 // Matmul test for Ampere MMA: across supported layouts
 TEST_F(NVFuserTest, FusionAmpereMatmul_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
-  int M = 128*9, N = 128*12, K = 248;
+  int M = 128 * 9, N = 128 * 12, K = 248;
 
   for (auto layout : {MatmulLayout::TN}) {
     Fusion fusion;
@@ -3231,47 +3231,47 @@ TEST_F(NVFuserTest, FusionMatmulSegmenterBasicMatmulRelaxedCheck_CUDA) {
   }
 }
 
-
 // Matmul test for Ampere MMA: across supported layouts
 TEST_F(NVFuserTest, FusionAmpereMatmulSplitK_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
   // cutlass, 0.5 ms (without splitK), 0.25 ms (with splitK = 4)
-//   using ShapeMMAThreadBlock =
-//     cutlass::gemm::GemmShape<128, 128, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
-// // This code section describes tile size a warp will compute
-// using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
-// // This code section describes the size of MMA op
-// using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
+  //   using ShapeMMAThreadBlock =
+  //     cutlass::gemm::GemmShape<128, 128, 16>;  // <- threadblock tile M =
+  //     128, N = 128, K = 16
+  // // This code section describes tile size a warp will compute
+  // using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile
+  // M = 64, N = 64, K = 16
+  // // This code section describes the size of MMA op
+  // using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M
+  // = 16, N = 8, K = 8
 
+  //---------- case-1--4 buffers, 0.15 ms
+  // int M = 128*3, N = 128*9, K = 4096;
+  // gemm_tile.cta_tile = GemmTile(128, 128, 32);
+  // gemm_tile.warp_tile = GemmTile(64, 64, 32);
+  // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
 
-//---------- case-1--4 buffers, 0.15 ms
-    // int M = 128*3, N = 128*9, K = 4096;
-    // gemm_tile.cta_tile = GemmTile(128, 128, 32);
-    // gemm_tile.warp_tile = GemmTile(64, 64, 32);
-    // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
+  //---------- case-1--split2(4)(32), 0.3 ms (0.32 ms) (0.94 ms)
+  // int M = 128*3, N = 128*9, K = 4096;
+  // gemm_tile.cta_tile = GemmTile(128, 128, 32);
+  // gemm_tile.warp_tile = GemmTile(64, 64, 32);
+  // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
 
-//---------- case-1--split2(4)(32), 0.3 ms (0.32 ms) (0.94 ms)
-    // int M = 128*3, N = 128*9, K = 4096;
-    // gemm_tile.cta_tile = GemmTile(128, 128, 32);
-    // gemm_tile.warp_tile = GemmTile(64, 64, 32);
-    // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
+  //---------- case-2, 0.078 ms
+  // int M = 128*3, N = 128*9, K = 4096;
+  // gemm_tile.cta_tile = GemmTile(64, 64, 32);
+  // gemm_tile.warp_tile = GemmTile(32, 32, 32);
+  // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
 
-//---------- case-2, 0.078 ms
-    // int M = 128*3, N = 128*9, K = 4096;
-    // gemm_tile.cta_tile = GemmTile(64, 64, 32);
-    // gemm_tile.warp_tile = GemmTile(32, 32, 32);
-    // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
-
-
-//---------- case-3-- (1, 0.15), (4, 0.37)
-    // int M = 128, N = 128, K = 4096;
-    // gemm_tile.cta_tile = GemmTile(128, 128, 32);
-    // gemm_tile.warp_tile = GemmTile(64, 64, 32);
-    // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
-  int M = 128*3, N = 128*9, K = 4096;
+  //---------- case-3-- (1, 0.15), (4, 0.37)
+  // int M = 128, N = 128, K = 4096;
+  // gemm_tile.cta_tile = GemmTile(128, 128, 32);
+  // gemm_tile.warp_tile = GemmTile(64, 64, 32);
+  // gemm_tile.instruction_tile = GemmTile(16, 8, 16);
+  int M = 128 * 3, N = 128 * 9, K = 4096;
   bool test_volta = false;
 
-  for (auto layout : {MatmulLayout::TN}) {
+  for (auto layout : {MatmulLayout::NT}) {
     Fusion fusion;
     FusionGuard fg(&fusion);
     auto tv0 = makeContigTensor(2, DataType::Half);
@@ -3294,20 +3294,18 @@ TEST_F(NVFuserTest, FusionAmpereMatmulSplitK_CUDA) {
     // 1 - 16K = (128*32*4) = (4K/stage * 4 stages) = 16K
     gemm_tile.cta_tile = GemmTile(128, 128, 32);
     gemm_tile.warp_tile = GemmTile(64, 64, 32);
-    if(test_volta){
-        // (k,time_ms) = (1, 3.5), (2, 1.95), (4,1.16)
-        gemm_tile.instruction_tile = GemmTile(16, 16, 4);
-        params.mma_macro = MmaOptions::MacroType::Volta_16_16_4;
-    }else{
-        // (k,time_ms) = (1, 0.28), (3, 0.35), ()
-        gemm_tile.instruction_tile = GemmTile(16, 8, 16);
-        params.mma_macro = MmaOptions::MacroType::Ampere_16_8_16;
-        params.async_gmem_load_operands = true;
-        params.double_buffer_options.double_buffer_smem_write = true;
-        params.double_buffer_options.smem_double_buffer_stage = 4;        
+    if (test_volta) {
+      // (k,time_ms) = (1, 3.5), (2, 1.95), (4,1.16)
+      gemm_tile.instruction_tile = GemmTile(16, 16, 4);
+      params.mma_macro = MmaOptions::MacroType::Volta_16_16_4;
+    } else {
+      // (k,time_ms) = (1, 0.28), (3, 0.35), ()
+      gemm_tile.instruction_tile = GemmTile(16, 8, 16);
+      params.mma_macro = MmaOptions::MacroType::Ampere_16_8_16;
+      params.async_gmem_load_operands = true;
+      params.double_buffer_options.double_buffer_smem_write = true;
+      params.double_buffer_options.smem_double_buffer_stage = 4;
     }
-
-
 
     params.tile_sizes = gemm_tile;
 

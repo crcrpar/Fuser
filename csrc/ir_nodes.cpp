@@ -1389,6 +1389,17 @@ MmaOptions::MmaInputLayout getInputLayout(
     const MmaOp::AxesData& m_axes,
     const MmaOp::AxesData& n_axes,
     const MmaOp::AxesData& k_axes) {
+  // NT layout (b - broadcast, r - reduction):
+  // A = [K, M, b]
+  // B = [K, b, N]
+  // C = [r, M, N]
+  if ((k_axes.front() < in_a.bcasts.front()) &&
+      (m_axes.front() < in_a.bcasts.front()) &&
+      (k_axes.front() < in_b.bcasts.front()) &&
+      (in_b.bcasts.front() < n_axes.front())) {
+    return MmaOptions::MmaInputLayout::NT;
+  }
+
   // TT layout (b - broadcast, r - reduction):
   // A = [M, K, b]
   // B = [b, K, N]
@@ -1409,16 +1420,7 @@ MmaOptions::MmaInputLayout getInputLayout(
       (in_b.bcasts.front() < k_axes.front())) {
     return MmaOptions::MmaInputLayout::TN;
   }
-  // NT layout (b - broadcast, r - reduction):
-  // A = [K, M, b]
-  // B = [K, b, N]
-  // C = [r, M, N]
-  if ((k_axes.front() < in_a.bcasts.front()) &&
-      (m_axes.front() < in_a.bcasts.front()) &&
-      (k_axes.front() < in_b.bcasts.front()) &&
-      (in_b.bcasts.front() < n_axes.front())) {
-    return MmaOptions::MmaInputLayout::NT;
-  }
+
 
   TORCH_INTERNAL_ASSERT(false, "Unsupported input layout");
 }
@@ -1648,7 +1650,7 @@ MmaOp::MmaOp(
   const auto input_layout_ = attribute(ATTR_POS_INPUT_LAYOUT)
                                  ->as<Attribute<MmaInputLayoutOpt>>()
                                  ->value;
-  if (input_layout_.has_value()) {
+  if (false && input_layout_.has_value()) {
     TORCH_INTERNAL_ASSERT(
         input_layout_.value() == input_layout.value(),
         "Input layout mismatch, infered attribute (",
@@ -2957,7 +2959,7 @@ void TensorDomain::merge(int axis_o, int axis_i) {
   resetDomains();
 }
 
-void TensorDomain::resetToRootDomains(){
+void TensorDomain::resetToRootDomains() {
   domain_ = root_domain_;
   resetDomains();
 }

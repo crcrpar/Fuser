@@ -1926,6 +1926,7 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
   //   has_reduction_ = hasReduction(domain_);
   // }
   void resetToRootDomains();
+
  private:
   const std::vector<IterDomain*> root_domain_;
   std::vector<IterDomain*> domain_;

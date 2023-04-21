@@ -536,30 +536,19 @@ std::shared_ptr<MatmulParams> getMatmulHeuristics(
   params->cparams.index_type = getIndexType(problem_shape.value());
 
   // Set split k using input tensor size M,N,K
-  std::vector<int> MKKN;
-  for(auto tv : ir_utils::filterByType<TensorView>(fusion->inputs())){
-    for (auto id : tv->getMaybeRFactorDomain()) {
-      if (id->isReduction() || id->isBroadcast()) {
-        continue;
-      }
-      auto id_size = runtime_info.expressionEvaluator().evaluate(id->extent());
-      TORCH_INTERNAL_ASSERT(
-        id_size.has_value(), "Could not infer input tensor size.");
-      MKKN.push_back(id_size->as<int64_t>());
-      std::cout << "Input tensor size: " << id_size->as<int64_t>() << std::endl;  
-    }
-  }
+  const auto& MNK = problem_shape.value();
   const int sm_count = device_prop->multiProcessorCount;
   const auto& cta_tile = params->tile_sizes.cta_tile;
-  const int num_blocks = MKKN[0] / cta_tile.m * MKKN[3] / cta_tile.n;
-  const int iter_k = MKKN[1] / cta_tile.k;
-  if(num_blocks < sm_count && iter_k > 32){
+  const int num_blocks = ceilDiv(MNK[0], cta_tile.m) * ceilDiv(MNK[1], cta_tile.n);
+  const int iter_k = ceilDiv(MNK[2], cta_tile.k);
+  if (num_blocks < sm_count && iter_k > 32) {
     params->split_k_factor = std::min(iter_k, sm_count / num_blocks);
   } else {
     params->split_k_factor = 1;
   }
-  std::cout<< "num_blocks: " << num_blocks << ", split_k_factor: " << params->split_k_factor << std::endl;  
-  
+  std::cout << "num_blocks: " << num_blocks
+            << ", split_k_factor: " << params->split_k_factor << std::endl;
+
   if (isDebugDumpEnabled(DebugDumpOption::MatmulChecks)) {
     printMsg(params->toString());
   }

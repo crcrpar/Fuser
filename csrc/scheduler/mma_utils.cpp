@@ -788,7 +788,6 @@ void scheduleVoltaA(TensorView* tv, MmaOptions options) {
   tv->merge(-5);
   tv->merge(-4);
 
-
   //[Warp, Ni8, K/Mi4]
   tv->axis(-3)->parallelize(ParallelType::TIDx);
 }

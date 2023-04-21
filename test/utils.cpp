@@ -262,27 +262,38 @@ TensorView* matmul(TensorView* a, TensorView* b, MatmulLayout layout) {
       a->nDims() == 2 && b->nDims() == 2, "only pure matmuls for these tests");
   TensorView *tv2 = nullptr, *tv0b = nullptr, *tv1b = nullptr;
   switch (layout) {
+    //! NT : K,M x K,N -> K,M,N
+    case MatmulLayout::NT:
+      tv0b = broadcast(a, {false, false, true});
+      tv1b = broadcast(b, {false, true, false});
+      tv2 = fusedMultiplySum(tv0b, tv1b, {0});
+      break;    
+    //! TT : M,K X K,N -> M,K,N
     case MatmulLayout::TT:
       tv0b = broadcast(a, {false, false, true});
       tv1b = broadcast(b, {true, false, false});
       tv2 = fusedMultiplySum(tv0b, tv1b, {1});
       break;
+    //! TN : M,K X N,K -> M,N,K      
     case MatmulLayout::TN:
       tv0b = broadcast(a, {false, true, false});
       tv1b = broadcast(b, {true, false, false});
       tv2 = fusedMultiplySum(tv0b, tv1b, {2});
-      break;
-    case MatmulLayout::NT:
-      tv0b = broadcast(a, {false, false, true});
-      tv1b = broadcast(b, {false, true, false});
-      tv2 = fusedMultiplySum(tv0b, tv1b, {0});
       break;
     default:
       TORCH_CHECK(false, "unsupported data layout.");
   }
   return tv2;
 }
-
+  //! [Operand Layout Convention]
+  //! Operand layout, T=transposed/row_major, N=normal/col_major
+  //!   We don't support calling NN mma directly since it implies
+  //!    a fused transpose. User needs to swap the operands and use
+  //!    TT mma to make the transpose explicit.
+  //! Ordered by position of K
+  //! NT : K,M x K,N -> K,M,N
+  //! TT : M,K X K,N -> M,K,N
+  //! TN : M,K X N,K -> M,N,K
 at::Tensor atMatmul(at::Tensor a, at::Tensor b, MatmulLayout layout) {
   switch (layout) {
     case MatmulLayout::TT:
