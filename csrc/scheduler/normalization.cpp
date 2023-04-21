@@ -1194,6 +1194,7 @@ std::shared_ptr<ReductionParams> persistentHeuristic(
     const bool fastest_dim_reduction,
     const size_t n_tensor_inputs,
     const size_t max_input_dtype_size,
+    const size_t tmp_gmem_dtype_size,
     const int64_t max_persistent_buffer_size,
     size_t vectorize_factor,
     bool project_persistent_buffers,
@@ -1202,9 +1203,6 @@ std::shared_ptr<ReductionParams> persistentHeuristic(
   if (combined_inner_outer_reduction) {
     const int64_t outer_dim_numel = total_iteration_numel;
     const int64_t inner_dim_numel = inner_most_dimension_numel;
-    // If the input is a half, we need to use 4 bytes for the temporary buffer
-    const size_t tmp_gmem_dtype_size =
-        max_input_dtype_size == 2 ? 4 : max_input_dtype_size;
     rparams = innerOuterPersistentHeuristic(
         outer_dim_numel,
         inner_dim_numel,
@@ -1404,6 +1402,12 @@ std::shared_ptr<ReductionParams> getPersistentHeuristics(
     n_tensor_inputs++;
   }
 
+  // dtype used to store partial outer reduction in combined reduction
+  const size_t tmp_gmem_dtype_size = combined_inner_outer_reduction
+      ? ataTypeSize(outer_reduction_tvs[0]->getDataType().value())
+
+            ataTypeSize(first_red_tv->getDataType().value());
+
   // Protect heuristics div by 0:
   n_tensor_inputs = std::max(n_tensor_inputs, (size_t)1);
 
@@ -1414,6 +1418,7 @@ std::shared_ptr<ReductionParams> getPersistentHeuristics(
       properties.fastest_dim_reduction,
       n_tensor_inputs,
       max_dtype_size,
+      tmp_gmem_dtype_size,
       max_persistent_size,
       vectorize_factor,
       project_persistent_buffers,
@@ -1842,3 +1847,4 @@ void schedulePersistentKernelInnerOuter(
   inlineMost();
 }
 } // namespace nvfuser
+ 
