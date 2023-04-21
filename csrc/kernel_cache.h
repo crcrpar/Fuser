@@ -99,6 +99,10 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
     profiling_ = to_profile;
   }
 
+  void setMeasureKernelTime(bool val = true) {
+    measure_kernel_time_ = val;
+  }
+
   //! Internal knob for profiling shape inference
   void disableLaunchParamCache() {
     for (auto& executor : executors_) {
@@ -490,7 +494,7 @@ class TORCH_CUDA_CU_API FusionExecutorCache {
 
   //! Logging state for most recent compilation
   bool profiling_ = false;
-
+  bool measure_kernel_time_ = false;
   //! Logging state for most recent compilation
   ExecutorLog most_recent_executor_log_;
 
