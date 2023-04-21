@@ -237,7 +237,6 @@ void FusionExecutor::compileFusion(
   }
 
   if (isDebugDumpEnabled(DebugDumpOption::FusionIr)) {
-    std::cout << "llu, calling  fusion->print();" << std::endl;
     fusion->print();
   } else if (isDebugDumpEnabled(DebugDumpOption::FusionIrMath)) {
     fusion->printMath();
