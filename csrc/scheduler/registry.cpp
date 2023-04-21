@@ -1796,6 +1796,28 @@ class PersistentKernelScheduler : public SchedulerEntry {
       return false;
     }
 
+    std::vector<TensorView*> inner_reduction_tvs;
+    std::vector<TensorView*> outer_reduction_tvs;
+    for (auto tv : reduction_tvs) {
+      if (scheduler_utils::isFastestDimReduction(tv)) {
+        inner_reduction_tvs.emplace_back(tv);
+      } else {
+        outer_reduction_tvs.emplace_back(tv);
+      }
+    }
+    bool combined_inner_outer =
+        !inner_reduction_tvs.empty() && !outer_reduction_tvs.empty();
+    if (combined_inner_outer &&
+        !checkReductionPattern(
+            fusion, inner_reduction_tvs, outer_reduction_tvs)) {
+      return false;
+    }
+    // If there is both inner and outer reduction, we use the first inner
+    // reduction tv as reference, otherwise we use the first reduction tv,
+    // whether it is inner or outer.
+    TensorView* reference_tv =
+        combined_inner_outer ? inner_reduction_tvs[0] : reduction_tvs[0];
+
     if (!ir_utils::getViewOps(fusion).empty()) {
       ComputeAtMap ca_map(fusion);
       if (requiresForwardViewReplay(fusion, ca_map)) {
@@ -1841,25 +1863,6 @@ class PersistentKernelScheduler : public SchedulerEntry {
               "inconsistent reduction root size");
           return false;
         }
-      }
-    }
-
-    // Use root domain map to check the reduction ops have the same axes
-    FusionGuard fg(fusion);
-    ComputeAtRootDomainMap root_map;
-    root_map.build(true);
-
-    // red_ops.size()>1 checked before
-    for (const auto it : c10::irange(1, reduction_tvs.size())) {
-      if (!checkPatternEquivalence(
-              reduction_tvs[it - 1], reduction_tvs[it], root_map)) {
-        scheduler_debug_utils::canScheduleRejectReason(
-            ScheduleHeuristic::Persistent,
-            "unmapped reduction ",
-            reduction_tvs[it - 1],
-            " and ",
-            reduction_tvs[it]);
-        return false;
       }
     }
 
@@ -2076,7 +2079,7 @@ class PersistentKernelScheduler : public SchedulerEntry {
       int64_t n_elements = 1;
       const int64_t vectorization_factor = 16 /
           dataTypeSize(tv->getDataType().value(),
-                       indexModeToDtype(runtime_info.getIndexMode()));
+                       runtime_info.getIndexType());
       const int64_t n_elements_factor = quarter_warp * vectorization_factor;
       const bool is_inner_reduction =
           scheduler_utils::isFastestDimReduction(tv);

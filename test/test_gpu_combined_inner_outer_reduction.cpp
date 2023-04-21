@@ -9,8 +9,8 @@
 #include <scheduler/all_schedulers.h>
 #include <scheduler/reduction_utils.h>
 #include <scheduler/utils.h>
-#include <test/test_gpu_validator.h>
-#include <test/test_utils.h>
+#include <test/utils.h>
+#include <test/validator.h>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/Exceptions.h>
@@ -197,7 +197,8 @@ TEST_F(NVFuserTest, FusionCombinedSchedulerLayerNormBackward_CUDA) {
         auto cg_outputs = fec.runFusionWithInputs(aten_inputs);
         if (i >= nwarm) {
           float runTimeus = 0.0f;
-          for (int i = 0; i < fkr->executors().size(); i++) {
+          int num_kernels = fkr->executors().size();
+          for (int i = 0; i < num_kernels; i++) {
             const FusionExecutor& fe = fkr->executors()[i];
             runTimeus += fe.kernelTimeMs() * 1e3;
           }

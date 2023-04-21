@@ -5,11 +5,10 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 // clang-format on
-+ #include<ATen / cuda / CUDAContext.h> +
-    #include<cuda_occupancy.h>
-#include <utils.h>
-
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/util/string_view.h>
+#include <cuda_occupancy.h>
+#include <utils.h>
 
 #include <cstdlib>
 #include <iostream>

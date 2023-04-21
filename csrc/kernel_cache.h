@@ -234,6 +234,7 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
 
   // States for profiling support
   bool profiling_ = false;
+  bool measure_kernel_time_ = false;
 
   std::mutex mutex_;
 
@@ -494,7 +495,7 @@ class TORCH_CUDA_CU_API FusionExecutorCache {
 
   //! Logging state for most recent compilation
   bool profiling_ = false;
-  bool measure_kernel_time_ = false;
+
   //! Logging state for most recent compilation
   ExecutorLog most_recent_executor_log_;
 

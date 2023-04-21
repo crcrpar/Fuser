@@ -655,7 +655,7 @@ int64_t partialReductionBufferSize(
     buffer_size = buffer_size == -1 ? 0
                                     : buffer_size *
             dataTypeSize(buffer->getDataType().value(),
-                         indexModeToDtype(runtime_info.getIndexMode()));
+                         runtime_info.getIndexType());
     partial_reduction_buffer_size += buffer_size;
   }
   return partial_reduction_buffer_size;
