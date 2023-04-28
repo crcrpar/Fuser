@@ -41,7 +41,7 @@ import sys
 
 import setuptools
 import setuptools.command.build_ext
-from setuptools import Extension, setup
+from setuptools import Extension, setup, find_packages
 
 # pick args used by this script
 CMAKE_ONLY = False
@@ -127,7 +127,9 @@ class build_ext(setuptools.command.build_ext.build_ext):
         for i, ext in enumerate(self.extensions):
             if ext.name == "nvfuser._C":
                 # NOTE: nvfuser pybind target is built with cmake, we remove the entry for ext_modules
-                del self.extensions[i]
+                # del self.extensions[i]
+
+                cmake()
 
                 # Copy nvfuser extension to proper file name
                 fullname = self.get_ext_fullname("nvfuser._C")
@@ -144,7 +146,7 @@ class build_ext(setuptools.command.build_ext.build_ext):
                     )
                     self.copy_file(src, dst)
 
-        setuptools.command.build_ext.build_ext.build_extensions(self)
+        # setuptools.command.build_ext.build_ext.build_extensions(self)
 
 
 class concat_third_party_license:
@@ -255,6 +257,7 @@ def cmake():
         "-DCMAKE_BUILD_TYPE=" + BUILD_TYPE,
         "-B",
         build_dir_name,
+        f"-DCMAKE_INSTALL_PREFIX={os.path.join(cwd, 'nvfuser')}",
     ]
     if not NO_NINJA:
         cmd_str.append("-G")
@@ -297,9 +300,15 @@ def version_tag():
     return version
 
 
+class CMakeExtension(Extension):
+
+    def __init__(self, name, sources, *args, **kwargs):
+        super().__init__(name, sources, *args, **kwargs)
+
+
 def main():
-    if BUILD_SETUP:
-        cmake()
+    # if BUILD_SETUP:
+    #     cmake()
 
     if not CMAKE_ONLY:
         # NOTE: package include files for cmake
@@ -321,7 +330,20 @@ def main():
             version=version_tag(),
             url="https://github.com/NVIDIA/Fuser",
             description="A Fusion Code Generator for NVIDIA GPUs (commonly known as 'nvFuser')",
-            packages=["nvfuser", "nvfuser_python_utils"],
+            packages=find_packages(
+                exclude=(
+                    "benchmark",
+                    "build",
+                    "cmake",
+                    "csrc",
+                    "examples",
+                    "python_tests",
+                    "runtime",
+                    "test",
+                    "third_party",
+                    "tools",
+                ),
+            ),
             ext_modules=[Extension(name=str("nvfuser._C"), sources=[])],
             license_files=("LICENSE",),
             cmdclass={
