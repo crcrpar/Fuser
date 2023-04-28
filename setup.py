@@ -126,6 +126,9 @@ class build_ext(setuptools.command.build_ext.build_ext):
     def build_extensions(self):
         for i, ext in enumerate(self.extensions):
             if ext.name == "nvfuser._C":
+                # NOTE: nvfuser pybind target is built with cmake, we remove the entry for ext_modules
+                del self.extensions[i]
+
                 # Copy nvfuser extension to proper file name
                 fullname = self.get_ext_fullname("nvfuser._C")
                 filename = self.get_ext_filename(fullname)
@@ -252,7 +255,6 @@ def cmake():
         "-DCMAKE_BUILD_TYPE=" + BUILD_TYPE,
         "-B",
         build_dir_name,
-        f"-DCMAKE_INSTALL_PREFIX={os.path.join(cwd, 'nvfuser')}",
     ]
     if not NO_NINJA:
         cmd_str.append("-G")
